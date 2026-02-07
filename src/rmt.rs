@@ -1,75 +1,101 @@
-use core::ops::DerefMut;
+use core::cell::UnsafeCell;
 
 use esp_hal::{
-    gpio::GpioPin,
-    into_ref,
-    peripheral::{Peripheral, PeripheralRef},
-    peripherals,
-    prelude::*,
-    rmt,
-    rmt::{Channel, PulseCode, TxChannel, TxChannelCreator},
     Blocking,
+    gpio::Level,
+    gpio::interconnect::PeripheralOutput,
+    peripherals::RMT,
+    rmt::{Channel, PulseCode, SingleShotTxTransaction, Tx, TxChannelConfig, TxChannelCreator},
+    time::Rate,
 };
 
-pub(crate) struct Rmt<'a> {
-    tx_channel: Option<Channel<Blocking, 1>>,
-    rmt: PeripheralRef<'a, peripherals::RMT>,
+pub(crate) struct Rmt<'d> {
+    tx_channel: Option<Channel<'d, Blocking, Tx>>,
+    in_flight: Option<SingleShotTxTransaction<'d, 'static, PulseCode>>,
 }
 
-impl<'a> Rmt<'a> {
-    pub(crate) fn new(rmt: impl Peripheral<P = peripherals::RMT> + 'a) -> Self {
-        into_ref!(rmt);
-        Rmt {
-            tx_channel: None,
-            rmt,
-        }
-    }
+struct PulseBuffer(UnsafeCell<[PulseCode; 2]>);
 
-    fn ensure_channel(&mut self) -> Result<(), crate::Error> {
-        if self.tx_channel.is_some() {
-            return Ok(());
-        }
-        let rmt = rmt::Rmt::new(
-            unsafe { self.rmt.deref_mut().clone_unchecked() }, // TODO: find better solution
-            80.MHz(),
-        )
-        .map_err(crate::Error::Rmt)?;
+// Safety: only accessed from the display driver on a single core in a
+// serialized fashion (we wait for the in-flight TX before mutating the buffer).
+unsafe impl Sync for PulseBuffer {}
+
+static PULSE_BUFFER: PulseBuffer =
+    PulseBuffer(UnsafeCell::new([PulseCode::end_marker(), PulseCode::end_marker()]));
+
+impl<'d> Rmt<'d> {
+    pub(crate) fn new(rmt: RMT<'d>, pin: impl PeripheralOutput<'d>) -> Result<Self, crate::Error> {
+        let rmt = esp_hal::rmt::Rmt::new(rmt, Rate::from_mhz(80)).map_err(crate::Error::Rmt)?;
         let tx_channel = rmt
             .channel1
-            .configure(
-                unsafe { GpioPin::<38>::steal() }, // TODO: find better solution
-                rmt::TxChannelConfig {
-                    clk_divider: 8,
-                    idle_output_level: false,
-                    idle_output: true,
-                    carrier_modulation: false,
-                    carrier_level: false,
-                    ..Default::default()
-                },
+            .configure_tx(
+                pin,
+                TxChannelConfig::default()
+                    .with_clk_divider(8)
+                    .with_idle_output_level(Level::Low)
+                    .with_idle_output(true)
+                    .with_carrier_modulation(false)
+                    .with_carrier_level(Level::Low),
             )
             .map_err(crate::Error::Rmt)?;
-        self.tx_channel = Some(tx_channel);
-        Ok(())
+
+        Ok(Self {
+            tx_channel: Some(tx_channel),
+            in_flight: None,
+        })
+    }
+
+    fn wait_in_flight(&mut self) -> Result<(), crate::Error> {
+        let Some(in_flight) = self.in_flight.take() else {
+            return Ok(());
+        };
+
+        match in_flight.wait() {
+            Ok(tx_channel) => {
+                self.tx_channel = Some(tx_channel);
+                Ok(())
+            }
+            Err((err, tx_channel)) => {
+                self.tx_channel = Some(tx_channel);
+                Err(crate::Error::Rmt(err))
+            }
+        }
     }
 
     pub(crate) fn pulse(&mut self, high: u16, low: u16, wait: bool) -> Result<(), crate::Error> {
-        self.ensure_channel()?;
+        // We can't start another TX while one is still in progress. Waiting
+        // here still allows the caller to overlap a non-waiting pulse with
+        // other work (e.g. starting an LCD_CAM DMA transfer) before the next
+        // call to `pulse()`.
+        self.wait_in_flight()?;
+
         let tx_channel = self.tx_channel.take().ok_or(crate::Error::Unknown)?;
-        let data = if high > 0 {
-            [PulseCode::new(true, high, false, low), PulseCode::empty()]
-        } else {
-            [PulseCode::new(true, low, false, 0), PulseCode::empty()]
-        };
-        let tx = tx_channel.transmit(&data).map_err(crate::Error::Rmt)?;
-        // FIXME: This is the culprit.. We need the channel later again but can't wait
-        // due to some time sensitive operations. Not sure how to solve this
+        let pulse_buffer = unsafe { &mut *PULSE_BUFFER.0.get() };
+        pulse_buffer[0] = if high > 0 {
+                PulseCode::new(Level::High, high, Level::Low, low)
+            } else {
+                PulseCode::new(Level::High, low, Level::Low, 0)
+            };
+        pulse_buffer[1] = PulseCode::end_marker();
+
+        let tx = tx_channel
+            .transmit(unsafe { &*PULSE_BUFFER.0.get() })
+            .map_err(crate::Error::Rmt)?;
+
         if wait {
-            self.tx_channel = Some(
-                tx.wait()
-                    .map_err(|(err, _)| err)
-                    .map_err(crate::Error::Rmt)?,
-            );
+            match tx.wait() {
+                Ok(tx_channel) => {
+                    self.tx_channel = Some(tx_channel);
+                    Ok(())
+                }
+                Err((err, tx_channel)) => {
+                    self.tx_channel = Some(tx_channel);
+                    Err(crate::Error::Rmt(err))
+                }
+            }
+        } else {
+            self.in_flight = Some(tx);
+            Ok(())
         }
-        Ok(())
     }
 }

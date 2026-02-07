@@ -1,48 +1,33 @@
 [package]
 name = "lilygo-epd47"
-description = "Simple driver for the LilyGo T5 4.7 inch E-Ink Display (HW-Version V2.3 / ESP32S3)"
 version = "0.5.0"
 authors = ["Frido Koch <info@fridokoch.de>"]
-edition = "2021"
+description = "Simple driver for the LilyGo T5 4.7 inch E-Ink Display (HW-Version V2.3 / ESP32S3)"
+readme = "README.md"
+keywords = [
+    "epd",
+    "lilygo",
+    "esp-hal",
+    "ED047TC1",
+    "embedded-graphics",
+]
+categories = [
+    "embedded",
+    "no-std",
+]
 license = "GPL-3.0"
-categories = ["embedded", "no-std"]
-readme = "./README.md"
 repository = "https://github.com/fridolin-koch/lilygo-epd47-rs"
-keywords = ["epd", "lilygo", "esp-hal", "ED047TC1", "embedded-graphics"]
+edition = "2021"
+
+[lib]
+name = "lilygo_epd47"
+path = "src/lib.rs"
 
 [dependencies]
-esp-hal = { version = "0.22.0", features = ["esp32s3", "octal-psram"] }
+esp-hal = { version = "~1.0", features = ["esp32s3", "unstable"] }
 embedded-graphics-core = { version = "0.4.0", optional = true }
-esp-alloc = "0.5.0"
-
-[dev-dependencies]
-esp-println = { version = "0.12.0", features = ["esp32s3", "log"] }
-esp-backtrace = { version = "0.14.2", features = [
-    "esp32s3",
-    "exception-handler",
-    "panic-handler",
-    "println",
-] }
-u8g2-fonts = { version = "0.4.0", features = ["embedded_graphics_textstyle"] }
-embedded-graphics = "0.8.1"
-log = { version = "0.4.21" }
-
-tinybmp = { version = "0.6.0" }
-[profile.dev]
-# Rust debug is too slow.
-# For debug builds always builds with some optimization
-opt-level = "s"
-
-[profile.release]
-codegen-units = 1 # LLVM can perform better optimizations using a single thread
-debug = 2
-debug-assertions = false
-incremental = false
-lto = 'fat'
-opt-level = 's'
-overflow-checks = false
+esp-alloc = "0.9.0"
 
 [features]
 default = ["embedded-graphics"]
-
 embedded-graphics = ["embedded-graphics-core"]

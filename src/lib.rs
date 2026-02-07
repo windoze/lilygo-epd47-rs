@@ -72,13 +72,15 @@ pub mod display;
 #[cfg(feature = "embedded-graphics")]
 pub mod graphics;
 
-mod battery;
+// mod battery;
 mod ed047tc1;
 mod rmt;
 
 /// Errors
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Error {
+    /// Pass-through
+    I8080Config(esp_hal::lcd_cam::lcd::i8080::ConfigError),
     /// Pass-through
     Rmt(esp_hal::rmt::Error),
     /// Pass-through
@@ -95,33 +97,6 @@ pub enum Error {
 type Result<T> = core::result::Result<T, Error>;
 
 pub use crate::{
-    battery::Battery,
     display::{Display, DrawMode},
-    ed047tc1::PinConfig,
+    ed047tc1::{LilyGoT5V23Pins, M5PaperS3Pins, PinConfig},
 };
-
-/// Convenience macro to build the pin config struct.
-#[macro_export]
-macro_rules! pin_config {
-    ($($name:ident),*) => {
-        $(
-            #[allow(unused_mut)]
-            lilygo_epd47::PinConfig {
-                data0: $name.GPIO6,
-                data1: $name.GPIO7,
-                data2: $name.GPIO4,
-                data3: $name.GPIO5,
-                data4: $name.GPIO2,
-                data5: $name.GPIO3,
-                data6: $name.GPIO8,
-                data7: $name.GPIO1,
-                cfg_data: $name.GPIO13,
-                cfg_clk: $name.GPIO12,
-                cfg_str: $name.GPIO0,
-                lcd_dc: $name.GPIO40,
-                lcd_wrx: $name.GPIO41,
-                rmt: $name.GPIO38,
-            }
-        )*
-    }
-}
